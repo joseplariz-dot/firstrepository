@@ -16,11 +16,23 @@ import java.sql.Statement;
 
 public class Main {
 
+    private static String getJdbcUrl() {
+        String dbUrl = System.getenv("DATABASE_URL");
+        if (dbUrl == null || dbUrl.isEmpty()) {
+            return null;
+        }
+        // If the URL starts with postgresql:// or postgres://, prepend jdbc:
+        if (dbUrl.startsWith("postgresql://") || dbUrl.startsWith("postgres://")) {
+            return "jdbc:" + dbUrl;
+        }
+        return dbUrl;
+    }
+
     public static void main(String[] args) throws Exception {
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
-        String dbUrl = System.getenv("DATABASE_URL");
+        String dbUrl = getJdbcUrl();
 
-        if (dbUrl != null && !dbUrl.isEmpty()) {
+        if (dbUrl != null) {
             try (Connection conn = DriverManager.getConnection(dbUrl)) {
                 Statement stmt = conn.createStatement();
                 stmt.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, name TEXT, age INT, address TEXT);");
@@ -90,7 +102,7 @@ public class Main {
                 String address = getParam(formData, "address");
 
                 boolean saved = false;
-                if (dbUrl != null && !dbUrl.isEmpty()) {
+                if (dbUrl != null) {
                     try (Connection conn = DriverManager.getConnection(dbUrl)) {
                         String sql = "INSERT INTO users (name, age, address) VALUES (?, ?, ?)";
                         PreparedStatement pstmt = conn.prepareStatement(sql);
@@ -142,7 +154,7 @@ public class Main {
             html.append("<html><body style='font-family: Arial, sans-serif; margin: 40px;'>");
             html.append("<h2>All Registered Users</h2>");
 
-            if (dbUrl != null && !dbUrl.isEmpty()) {
+            if (dbUrl != null) {
                 try (Connection conn = DriverManager.getConnection(dbUrl)) {
                     Statement stmt = conn.createStatement();
                     ResultSet rs = stmt.executeQuery("SELECT * FROM users ORDER BY id DESC");
