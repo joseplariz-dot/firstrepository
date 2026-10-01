@@ -6,6 +6,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.net.URLDecoder;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -15,30 +17,21 @@ import java.sql.Statement;
 public class Main {
 
     public static void main(String[] args) throws Exception {
-        // Get PORT and Database credentials from environment variables (provided by Render)
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
         String dbUrl = System.getenv("DATABASE_URL");
 
-        // Initialize Database Table if needed
-        if (dbUrl != null) {
+        if (dbUrl != null && !dbUrl.isEmpty()) {
             try (Connection conn = DriverManager.getConnection(dbUrl)) {
                 Statement stmt = conn.createStatement();
                 stmt.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, name TEXT, age INT, address TEXT);");
             } catch (Exception e) {
-                System.out.println("DB Setup Warning: " + e.getMessage());
+                System.err.println("Database setup warning: " + e.getMessage());
             }
         }
 
-        // Start Java's built-in HTTP server
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
-        
-        // Route 1: Main Web Form Page
-        server.createContext("/", new RootHandler());
-        
-        // Route 2: API to Save Data
+        server.createContext("/", new HomeHandler());
         server.createContext("/save", new SaveHandler(dbUrl));
-        
-        // Route 3: API to View Data
         server.createContext("/users", new UsersHandler(dbUrl));
 
         server.setExecutor(null);
@@ -46,45 +39,58 @@ public class Main {
         server.start();
     }
 
-    // HTML Web Form Handler
-    static class RootHandler implements HttpHandler {
+    static class HomeHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            String html = "<html><body>"
-                    + "<h2>Enter User Details</h2>"
+            String html = "<html>"
+                    + "<head><title>User Data Form</title></head>"
+                    + "<body style='font-family: Arial, sans-serif; margin: 40px;'>"
+                    + "<h2>Enter User Information</h2>"
                     + "<form action='/save' method='POST'>"
-                    + "  Name: <input type='text' name='name'><br><br>"
-                    + "  Age: <input type='number' name='age'><br><br>"
-                    + "  Address: <input type='text' name='address'><br><br>"
-                    + "  <input type='submit' value='Submit'>"
+                    + "  <label>Name:</label><br>"
+                    + "  <input type='text' name='name' required><br><br>"
+                    + "  <label>Age:</label><br>"
+                    + "  <input type='number' name='age' required><br><br>"
+                    + "  <label>Address:</label><br>"
+                    + "  <input type='text' name='address' required><br><br>"
+                    + "  <button type='submit'>Save Data</button>"
                     + "</form>"
-                    + "<br><a href='/users'>View All Submitted Users</a>"
-                    + "</body></html>";
+                    + "<br><hr><br>"
+                    + "<a href='/users'>View Saved Users</a>"
+                    + "</body>"
+                    + "</html>";
 
-            exchange.sendResponseHeaders(200, html.getBytes().length);
-            OutputStream os = exchange.getResponseBody();
-            os.write(html.getBytes());
-            os.close();
+            byte[] responseBytes = html.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
+            exchange.sendResponseHeaders(200, responseBytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(responseBytes);
+            }
         }
     }
 
-    // Save Data to PostgreSQL Handler
     static class SaveHandler implements HttpHandler {
-        private String dbUrl;
-        public SaveHandler(String dbUrl) { this.dbUrl = dbUrl; }
+        private final String dbUrl;
+
+        public SaveHandler(String dbUrl) {
+            this.dbUrl = dbUrl;
+        }
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
                 InputStream is = exchange.getRequestBody();
-                String formData = new String(is.readAllBytes());
-                
-                // Parse simple form data: name=John&age=25&address=123+Main+St
+                String formData = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+
                 String name = getParam(formData, "name");
-                int age = Integer.parseInt(getParam(formData, "age").replaceAll("[^0-9]", "0"));
+                int age = 0;
+                try {
+                    age = Integer.parseInt(getParam(formData, "age"));
+                } catch (NumberFormatException ignored) {}
                 String address = getParam(formData, "address");
 
-                if (dbUrl != null) {
+                boolean saved = false;
+                if (dbUrl != null && !dbUrl.isEmpty()) {
                     try (Connection conn = DriverManager.getConnection(dbUrl)) {
                         String sql = "INSERT INTO users (name, age, address) VALUES (?, ?, ?)";
                         PreparedStatement pstmt = conn.prepareStatement(sql);
@@ -92,16 +98,23 @@ public class Main {
                         pstmt.setInt(2, age);
                         pstmt.setString(3, address);
                         pstmt.executeUpdate();
+                        saved = true;
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
                 }
 
-                String response = "<html><body><h3>Data Saved Successfully!</h3><a href='/'>Go Back</a> | <a href='/users'>View All Users</a></body></html>";
-                exchange.sendResponseHeaders(200, response.getBytes().length);
-                OutputStream os = exchange.getResponseBody();
-                os.write(response.getBytes());
-                os.close();
+                String responseHtml = "<html><body style='font-family: Arial, sans-serif; margin: 40px;'>"
+                        + (saved ? "<h3>Data saved successfully!</h3>" : "<h3>Error: Could not save data to database.</h3>")
+                        + "<a href='/'>Go Back</a> | <a href='/users'>View All Users</a>"
+                        + "</body></html>";
+
+                byte[] responseBytes = responseHtml.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
+                exchange.sendResponseHeaders(200, responseBytes.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(responseBytes);
+                }
             }
         }
 
@@ -109,46 +122,64 @@ public class Main {
             for (String pair : body.split("&")) {
                 String[] kv = pair.split("=");
                 if (kv.length > 0 && kv[0].equals(key)) {
-                    return kv.length > 1 ? java.net.URLDecoder.decode(kv[1], java.nio.charset.StandardCharsets.UTF_8) : "";
+                    return kv.length > 1 ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : "";
                 }
             }
             return "";
         }
     }
 
-    // Retrieve Data from PostgreSQL Handler
     static class UsersHandler implements HttpHandler {
-        private String dbUrl;
-        public UsersHandler(String dbUrl) { this.dbUrl = dbUrl; }
+        private final String dbUrl;
+
+        public UsersHandler(String dbUrl) {
+            this.dbUrl = dbUrl;
+        }
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            StringBuilder html = new StringBuilder("<html><body><h2>Saved Users</h2><ul>");
-            
-            if (dbUrl != null) {
+            StringBuilder html = new StringBuilder();
+            html.append("<html><body style='font-family: Arial, sans-serif; margin: 40px;'>");
+            html.append("<h2>All Registered Users</h2>");
+
+            if (dbUrl != null && !dbUrl.isEmpty()) {
                 try (Connection conn = DriverManager.getConnection(dbUrl)) {
                     Statement stmt = conn.createStatement();
-                    ResultSet rs = stmt.executeQuery("SELECT * FROM users");
+                    ResultSet rs = stmt.executeQuery("SELECT * FROM users ORDER BY id DESC");
+
+                    html.append("<table border='1' cellpadding='8' cellspacing='0'>");
+                    html.append("<tr><th>ID</th><th>Name</th><th>Age</th><th>Address</th></tr>");
+
+                    boolean hasData = false;
                     while (rs.next()) {
-                        html.append("<li>")
-                            .append("<b>Name:</b> ").append(rs.getString("name"))
-                            .append(" | <b>Age:</b> ").append(rs.getInt("age"))
-                            .append(" | <b>Address:</b> ").append(rs.getString("address"))
-                            .append("</li>");
+                        hasData = true;
+                        html.append("<tr>")
+                            .append("<td>").append(rs.getInt("id")).append("</td>")
+                            .append("<td>").append(rs.getString("name")).append("</td>")
+                            .append("<td>").append(rs.getInt("age")).append("</td>")
+                            .append("<td>").append(rs.getString("address")).append("</td>")
+                            .append("</tr>");
+                    }
+                    html.append("</table>");
+
+                    if (!hasData) {
+                        html.append("<p>No users found in database yet.</p>");
                     }
                 } catch (Exception e) {
-                    html.append("<p>Error fetching users: ").append(e.getMessage()).append("</p>");
+                    html.append("<p style='color: red;'>Database error: ").append(e.getMessage()).append("</p>");
                 }
             } else {
-                html.append("<p>Database connection not configured.</p>");
+                html.append("<p style='color: red;'>DATABASE_URL environment variable is missing.</p>");
             }
 
-            html.append("</ul><br><a href='/'>Add Another Entry</a></body></html>");
+            html.append("<br><a href='/'>Add Another Entry</a></body></html>");
 
-            exchange.sendResponseHeaders(200, html.getBytes().length);
-            OutputStream os = exchange.getResponseBody();
-            os.write(html.toString().getBytes());
-            os.close();
+            byte[] responseBytes = html.toString().getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
+            exchange.sendResponseHeaders(200, responseBytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(responseBytes);
+            }
         }
     }
 }
